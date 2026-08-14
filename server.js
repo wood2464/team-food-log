@@ -12,17 +12,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// 环境变量在各平台的网页表单里粘贴时，经常会不小心带上首尾空格/换行，
+// 这类字符混进 HTTP header（比如 Turso 的 Bearer token）会直接导致请求报错，
+// 所以统一 trim 一遍，防止这种复制粘贴的小问题搞垮整个服务。
+const TURSO_URL = process.env.TURSO_URL?.trim() || 'file:db.sqlite';
+const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN?.trim() || undefined;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY?.trim() || undefined;
+
 // 数据库连接
 const db = createClient({
-  url: process.env.TURSO_URL || 'file:db.sqlite',
-  authToken: process.env.TURSO_AUTH_TOKEN || undefined,
+  url: TURSO_URL,
+  authToken: TURSO_AUTH_TOKEN,
 });
 
 // Claude API 客户端（用于 /api/discover）
-const anthropic = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+const anthropic = ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: ANTHROPIC_API_KEY })
   : null;
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-opus-5';
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL?.trim() || 'claude-opus-5';
 
 // 中间件
 app.use(cors());
