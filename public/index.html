@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>队友食录</title>
+  <meta name="description" content="团队餐厅记录 & 决策工具">
+  <meta name="theme-color" content="#FBF6EE">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="队友食录">
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@latest"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+      background: #FBF6EE;
+      color: #26201C;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // lucide (vanilla, non-React CDN build) exports each icon as raw SVG node
+    // data — [[tag, attrs], ...] — not a React component. Wrap each one into
+    // a real component so the rest of the app can use JSX like <Star .../>.
+    function makeIconComponent(iconData) {
+      return function LucideIcon({ size = 18, color = "currentColor", strokeWidth = 2, fill = "none", className = "", style, ...rest }) {
+        return React.createElement(
+          "svg",
+          {
+            width: size,
+            height: size,
+            viewBox: "0 0 24 24",
+            fill,
+            stroke: color,
+            strokeWidth,
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+            className: ("lucide-icon " + className).trim(),
+            style,
+            ...rest,
+          },
+          (iconData || []).map(([tag, attrs], i) => React.createElement(tag, { key: i, ...attrs }))
+        );
+      };
+    }
+    const ICON_NAMES = ["Plus", "Star", "Dice5", "Camera", "Search", "X", "Trash2", "MapPin", "Pencil", "SlidersHorizontal", "ThumbsUp", "ThumbsDown", "Minus", "Utensils", "Link2", "Check", "Compass", "Sparkles", "RotateCw", "Loader2"];
+    const Icons = {};
+    ICON_NAMES.forEach((n) => { Icons[n] = makeIconComponent(lucide[n]); });
+    const { Plus, Star, Dice5, Camera, Search, X, Trash2, MapPin, Pencil, SlidersHorizontal, ThumbsUp, ThumbsDown, Minus, Utensils, Link2, Check, Compass, Sparkles, RotateCw, Loader2 } = Icons;
+
+    const API = typeof window !== 'undefined' ? window.location.origin : '';
+
+    const CUISINES = ["火锅", "中餐", "日料", "韩餐", "西餐", "烧烤", "快餐", "咖啡甜品", "东南亚", "其他"];
+    const CUR = { "¥": "¥", "$": "$" };
+
+    function compressImage(file, maxDim = 1200, quality = 0.72) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            let { width, height } = img;
+            if (width > height && width > maxDim) { height = Math.round(height * maxDim / width); width = maxDim; }
+            else if (height >= width && height > maxDim) { width = Math.round(width * maxDim / height); height = maxDim; }
+            const canvas = document.createElement("canvas");
+            canvas.width = width; canvas.height = height;
+            canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL("image/jpeg", quality));
+          };
+          img.onerror = reject;
+          img.src = e.target.result;
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    const searchLinks = (name) => {
+      const q = encodeURIComponent(name);
+      return [
+        { label: "点评", url: `https://www.baidu.com/s?wd=${q}%20大众点评` },
+        { label: "小红书", url: `https://www.xiaohongshu.com/search_result?keyword=${q}` },
+        { label: "地图", url: `https://uri.amap.com/search?keyword=${q}` },
+      ];
+    };
+
+    const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+    function App() {
+      const [ready, setReady] = useState(false);
+      const [me, setMe] = useState("");
+      const [needName, setNeedName] = useState(false);
+      const [title, setTitle] = useState("队友食录");
+      const [list, setList] = useState([]);
+      const [q, setQ] = useState("");
+      const [sort, setSort] = useState("new");
+      const [filterCuisine, setFilterCuisine] = useState("");
+      const [editing, setEditing] = useState(null);
+      const [deciding, setDeciding] = useState(false);
+      const [city, setCity] = useState("深圳");
+      const [toast, setToast] = useState("");
+
+      useEffect(() => {
+        (async () => {
+          try {
+            const resTitle = await fetch(`${API}/api/meta/title`).then(r => r.json());
+            if (resTitle.value) setTitle(resTitle.value);
+            const resCity = await fetch(`${API}/api/meta/city`).then(r => r.json());
+            if (resCity.value) setCity(resCity.value);
+            const resResto = await fetch(`${API}/api/restaurants`).then(r => r.json());
+            setList(resResto || []);
+          } catch (e) {
+            console.error('Load error:', e);
+            flash('数据加载失败');
+          }
+          setReady(true);
+        })();
+        const nm = localStorage.getItem('me:name');
+        if (nm) setMe(nm);
+        else setNeedName(true);
+      }, []);
+
+      const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2200); };
+
+      const saveResto = useCallback(async (r) => {
+        try {
+          await fetch(`${API}/api/restaurants`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(r),
+          });
+          setList((prev) => {
+            const i = prev.findIndex((x) => x.id === r.id);
+            if (i === -1) return [...prev, r];
+            const cp = [...prev]; cp[i] = r; return cp;
+          });
+          return true;
+        } catch (e) {
+          console.error('Save error:', e);
+          flash("保存失败");
+          return false;
+        }
+      }, []);
+
+      const removeResto = useCallback(async (id) => {
+        try {
+          await fetch(`${API}/api/restaurants/${id}`, { method: 'DELETE' });
+          setList((prev) => prev.filter((x) => x.id !== id));
+        } catch (e) {
+          console.error('Delete error:', e);
+          flash("删除失败");
+        }
+      }, []);
+
+      const saveTitle = async (t) => {
+        setTitle(t);
+        await fetch(`${API}/api/meta`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: 'title', value: t }),
+        });
+      };
+
+      const saveCity = async (c) => {
+        setCity(c);
+        await fetch(`${API}/api/meta`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: 'city', value: c }),
+        });
+      };
+
+      const saveMe = (nm) => {
+        setMe(nm);
+        setNeedName(false);
+        localStorage.setItem('me:name', nm);
+      };
+
+      let shown = list.filter((r) => {
+        if (filterCuisine && !(r.cuisine || []).includes(filterCuisine)) return false;
+        if (q) {
+          const hay = (r.name + " " + (r.dishes || []).map((d) => d.name).join(" ") + " " + (r.address || "")).toLowerCase();
+          if (!hay.includes(q.toLowerCase())) return false;
+        }
+        return true;
+      });
+      shown = [...shown].sort((a, b) => {
+        if (sort === "new") return (b.createdAt || 0) - (a.createdAt || 0);
+        if (sort === "rating") return (b.rating || 0) - (a.rating || 0);
+        if (sort === "cheap") return (a.price || 1e9) - (b.price || 1e9);
+        if (sort === "pricey") return (b.price || -1) - (a.price || -1);
+        return 0;
+      });
+
+      return (
+        <div className="app">
+          <style>{CSS}</style>
+          <header className="hd">
+            <div className="hd-l">
+              <span className="logo"><Utensils size={18} strokeWidth={2.4} /></span>
+              <EditableTitle value={title} onSave={saveTitle} />
+            </div>
+            <button className="who" onClick={() => setNeedName(true)} title="切换名字">
+              {me ? me : "设置名字"}
+            </button>
+          </header>
+
+          <div className="bar">
+            <div className="searchbox">
+              <Search size={16} />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜餐厅、菜名、地址…" />
+              {q && <button className="clr" onClick={() => setQ("")}><X size={14} /></button>}
+            </div>
+            <button className="decide" onClick={() => setDeciding(true)}>
+              <Dice5 size={18} strokeWidth={2.3} /> 今天吃啥
+            </button>
+          </div>
+
+          <div className="filters">
+            <div className="chips">
+              <button className={"chip" + (filterCuisine === "" ? " on" : "")} onClick={() => setFilterCuisine("")}>全部</button>
+              {CUISINES.map((c) => (
+                <button key={c} className={"chip" + (filterCuisine === c ? " on" : "")} onClick={() => setFilterCuisine(filterCuisine === c ? "" : c)}>{c}</button>
+              ))}
+            </div>
+            <div className="sortrow">
+              <SlidersHorizontal size={14} />
+              <select value={sort} onChange={(e) => setSort(e.target.value)}>
+                <option value="new">最新添加</option>
+                <option value="rating">评分最高</option>
+                <option value="cheap">人均最低</option>
+                <option value="pricey">人均最高</option>
+              </select>
+              <span className="count">{shown.length} 家</span>
+            </div>
+          </div>
+
+          <main className="grid">
+            {!ready && <div className="empty">加载中…</div>}
+            {ready && shown.length === 0 && (
+              <div className="empty">
+                <p className="e-big">还没有餐厅</p>
+                <p className="e-sub">{list.length === 0 ? "加上你们吃过的第一家，全队都能看到。" : "换个筛选条件试试。"}</p>
+                {list.length === 0 && <button className="e-btn" onClick={() => setEditing({})}><Plus size={16} /> 加第一家</button>}
+              </div>
+            )}
+            {ready && shown.map((r) => (
+              <Card key={r.id} r={r} onEdit={() => setEditing(r)} onDelete={() => removeResto(r.id)} />
+            ))}
+          </main>
+
+          <button className="fab" onClick={() => setEditing({})} title="加餐厅"><Plus size={24} strokeWidth={2.6} /></button>
+
+          {editing && (
+            <Editor
+              initial={editing}
+              me={me}
+              onClose={() => setEditing(null)}
+              onSave={async (r) => { const ok = await saveResto(r); if (ok) { setEditing(null); flash("已保存"); } }}
+            />
+          )}
+
+          {deciding && <Decider list={list} city={city} me={me} onSaveCity={saveCity} onSaveResto={saveResto} onFlash={flash} onClose={() => setDeciding(false)} onOpen={(r) => { setDeciding(false); setEditing(r); }} />}
+
+          {needName && <NamePrompt current={me} onSave={saveMe} onClose={() => me && setNeedName(false)} />}
+
+          {toast && <div className="toast">{toast}</div>}
+        </div>
+      );
+    }
+
+    function EditableTitle({ value, onSave }) {
+      const [ed, setEd] = useState(false);
+      const [v, setV] = useState(value);
+      useEffect(() => setV(value), [value]);
+      if (ed) return (
+        <input className="title-input" autoFocus value={v}
+          onChange={(e) => setV(e.target.value)}
+          onBlur={() => { setEd(false); if (v.trim()) onSave(v.trim()); }}
+          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+      );
+      return <button className="title" onClick={() => setEd(true)}>{value}<Pencil size={12} /></button>;
+    }
+
+    function Stars({ value = 0, size = 16, onChange }) {
+      const [hover, setHover] = useState(0);
+      return (
+        <span className="stars">
+          {[1, 2, 3, 4, 5].map((n) => {
+            const active = (hover || value) >= n;
+            return (
+              <button key={n} type="button" className="star" disabled={!onChange}
+                onMouseEnter={() => onChange && setHover(n)} onMouseLeave={() => onChange && setHover(0)}
+                onClick={() => onChange && onChange(n)}>
+                <Star size={size} fill={active ? "#F2A93B" : "none"} color={active ? "#F2A93B" : "#DBCEBC"} strokeWidth={1.8} />
+              </button>
+            );
+          })}
+        </span>
+      );
+    }
+
+    function Card({ r, onEdit, onDelete }) {
+      const [confirm, setConfirm] = useState(false);
+      const photo = (r.photos || [])[0];
+      const goods = (r.dishes || []).filter((d) => d.verdict === "good");
+      return (
+        <article className="card">
+          <div className="card-top" onClick={onEdit}>
+            {photo
+              ? <img src={photo} alt={r.name} className="thumb" />
+              : <div className="thumb ph"><Utensils size={26} /></div>}
+            {(r.photos || []).length > 1 && <span className="pcount"><Camera size={11} /> {r.photos.length}</span>}
+          </div>
+          <div className="card-body">
+            <div className="card-head">
+              <h3 onClick={onEdit}>{r.name}</h3>
+              <div className="card-actions">
+                <button onClick={onEdit}><Pencil size={14} /></button>
+                <button onClick={() => setConfirm(true)}><Trash2 size={14} /></button>
+              </div>
+            </div>
+            <div className="meta">
+              <Stars value={r.rating} size={14} />
+              {r.price ? <span className="price">{(r.currency || "¥")}{r.price}<i>/人</i></span> : null}
+            </div>
+            {(r.cuisine || []).length > 0 && (
+              <div className="tags">{r.cuisine.map((c) => <span key={c} className="tag">{c}</span>)}</div>
+            )}
+            {goods.length > 0 && (
+              <p className="dishes"><ThumbsUp size={12} /> {goods.map((d) => d.name).join("、")}</p>
+            )}
+            {r.address && <p className="addr"><MapPin size={12} /> {r.address}</p>}
+
+            <div className="links">
+              {searchLinks(r.name).map((l) => (
+                <a key={l.label} href={l.url} target="_blank" rel="noreferrer" className="qlink">{l.label}</a>
+              ))}
+              {(r.links || []).map((l, i) => (
+                <a key={i} href={l.url} target="_blank" rel="noreferrer" className="qlink saved"><Link2 size={11} /> {l.label}</a>
+              ))}
+            </div>
+            {r.addedBy && <p className="by">by {r.addedBy}</p>}
+          </div>
+
+          {confirm && (
+            <div className="confirm">
+              <span>删掉「{r.name}」？</span>
+              <div>
+                <button className="c-no" onClick={() => setConfirm(false)}>取消</button>
+                <button className="c-yes" onClick={onDelete}>删除</button>
+              </div>
+            </div>
+          )}
+        </article>
+      );
+    }
+
+    function Editor({ initial, me, onClose, onSave }) {
+      const isNew = !initial.id;
+      const [name, setName] = useState(initial.name || "");
+      const [rating, setRating] = useState(initial.rating || 0);
+      const [currency, setCurrency] = useState(initial.currency || "¥");
+      const [price, setPrice] = useState(initial.price || "");
+      const [cuisine, setCuisine] = useState(initial.cuisine || []);
+      const [address, setAddress] = useState(initial.address || "");
+      const [notes, setNotes] = useState(initial.notes || "");
+      const [photos, setPhotos] = useState(initial.photos || []);
+      const [dishes, setDishes] = useState(initial.dishes || []);
+      const [dishInput, setDishInput] = useState("");
+      const [links, setLinks] = useState(initial.links || []);
+      const [linkInput, setLinkInput] = useState("");
+      const [busy, setBusy] = useState(false);
+      const fileRef = useRef();
+
+      const toggleCuisine = (c) => setCuisine((p) => p.includes(c) ? p.filter((x) => x !== c) : [...p, c]);
+
+      const addPhotos = async (files) => {
+        setBusy(true);
+        const next = [...photos];
+        for (const f of Array.from(files).slice(0, 6 - photos.length)) {
+          try { next.push(await compressImage(f)); } catch {}
+        }
+        setPhotos(next.slice(0, 6));
+        setBusy(false);
+      };
+
+      const addDish = () => {
+        const n = dishInput.trim(); if (!n) return;
+        setDishes((p) => [...p, { name: n, verdict: "good" }]); setDishInput("");
+      };
+
+      const cycleVerdict = (i) => setDishes((p) => p.map((d, j) => j === i
+        ? { ...d, verdict: d.verdict === "good" ? "meh" : d.verdict === "meh" ? "bad" : "good" } : d));
+
+      const addLink = () => {
+        const u = linkInput.trim(); if (!u) return;
+        let label = "链接";
+        try { label = new URL(u.startsWith("http") ? u : "https://" + u).hostname.replace("www.", ""); } catch {}
+        setLinks((p) => [...p, { label, url: u.startsWith("http") ? u : "https://" + u }]);
+        setLinkInput("");
+      };
+
+      const submit = () => {
+        if (!name.trim()) return;
+        onSave({
+          id: initial.id || uid(),
+          name: name.trim(),
+          rating, currency,
+          price: price === "" ? null : Number(price),
+          cuisine, address: address.trim(), notes: notes.trim(),
+          photos, dishes, links,
+          addedBy: initial.addedBy || me || "",
+          createdAt: initial.createdAt || Date.now(),
+        });
+      };
+
+      return (
+        <div className="sheet-wrap" onClick={onClose}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-hd">
+              <h2>{isNew ? "加餐厅" : "编辑"}</h2>
+              <button onClick={onClose}><X size={20} /></button>
+            </div>
+            <div className="sheet-body">
+              <label className="fl">餐厅名<span>*</span></label>
+              <input className="in" value={name} onChange={(e) => setName(e.target.value)} placeholder="比如 海底捞（万象城店）" />
+
+              <label className="fl">评分</label>
+              <Stars value={rating} size={26} onChange={setRating} />
+
+              <label className="fl">人均</label>
+              <div className="price-row">
+                <select value={currency} onChange={(e) => setCurrency(e.target.value)}>{Object.keys(CUR).map((c) => <option key={c}>{c}</option>)}</select>
+                <input className="in" type="number" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="120" />
+              </div>
+
+              <label className="fl">菜系</label>
+              <div className="chips">
+                {CUISINES.map((c) => (
+                  <button key={c} type="button" className={"chip" + (cuisine.includes(c) ? " on" : "")} onClick={() => toggleCuisine(c)}>{c}</button>
+                ))}
+              </div>
+
+              <label className="fl">菜品</label>
+              <div className="dish-add">
+                <input className="in" value={dishInput} onChange={(e) => setDishInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addDish()} placeholder="加个菜名回车" />
+                <button type="button" className="mini" onClick={addDish}><Plus size={16} /></button>
+              </div>
+              <div className="dish-list">
+                {dishes.map((d, i) => (
+                  <span key={i} className={"dish v-" + d.verdict}>
+                    <button type="button" onClick={() => cycleVerdict(i)} className="vbtn">
+                      {d.verdict === "good" ? <ThumbsUp size={12} /> : d.verdict === "bad" ? <ThumbsDown size={12} /> : <Minus size={12} />}
+                    </button>
+                    {d.name}
+                    <button type="button" className="dx" onClick={() => setDishes((p) => p.filter((_, j) => j !== i))}><X size={11} /></button>
+                  </span>
+                ))}
+              </div>
+
+              <label className="fl">照片</label>
+              <div className="photos">
+                {photos.map((p, i) => (
+                  <div key={i} className="ph-item">
+                    <img src={p} alt="" />
+                    <button type="button" onClick={() => setPhotos((x) => x.filter((_, j) => j !== i))}><X size={12} /></button>
+                  </div>
+                ))}
+                {photos.length < 6 && (
+                  <button type="button" className="ph-add" onClick={() => fileRef.current.click()}>
+                    {busy ? "…" : <Camera size={20} />}
+                  </button>
+                )}
+                <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => addPhotos(e.target.files)} />
+              </div>
+
+              <label className="fl">地址</label>
+              <input className="in" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="选填" />
+
+              <label className="fl">链接</label>
+              <div className="dish-add">
+                <input className="in" value={linkInput} onChange={(e) => setLinkInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addLink()} placeholder="粘贴链接回车" />
+                <button type="button" className="mini" onClick={addLink}><Plus size={16} /></button>
+              </div>
+              <div className="dish-list">
+                {links.map((l, i) => (
+                  <span key={i} className="dish v-link"><Link2 size={12} /> {l.label}
+                    <button type="button" className="dx" onClick={() => setLinks((p) => p.filter((_, j) => j !== i))}><X size={11} /></button>
+                  </span>
+                ))}
+              </div>
+
+              <label className="fl">备注</label>
+              <textarea className="in ta" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="环境、排队、停车…选填" />
+            </div>
+            <div className="sheet-foot">
+              <button className="btn ghost" onClick={onClose}>取消</button>
+              <button className="btn solid" onClick={submit} disabled={!name.trim()}><Check size={16} /> 保存</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Decider({ list, city, me, onSaveCity, onSaveResto, onFlash, onClose, onOpen }) {
+      const [mode, setMode] = useState("log");
+      const [cuisine, setCuisine] = useState("");
+      const [maxPrice, setMaxPrice] = useState("");
+      const [minRating, setMinRating] = useState(0);
+      const [rolling, setRolling] = useState(false);
+      const [flash, setFlash] = useState(null);
+      const [picked, setPicked] = useState(null);
+      const timer = useRef();
+
+      const [cityInput, setCityInput] = useState(city);
+      const [dCuisine, setDCuisine] = useState("");
+      const [note, setNote] = useState("");
+      const [loading, setLoading] = useState(false);
+      const [results, setResults] = useState([]);
+      const [error, setError] = useState("");
+      const [savedNames, setSavedNames] = useState({});
+      const [pickIdx, setPickIdx] = useState(-1);
+
+      const pool = list.filter((r) => {
+        if (cuisine && !(r.cuisine || []).includes(cuisine)) return false;
+        if (maxPrice && (r.price || 0) > Number(maxPrice)) return false;
+        if (minRating && (r.rating || 0) < minRating) return false;
+        return true;
+      });
+
+      const roll = () => {
+        if (pool.length === 0) return;
+        setPicked(null);
+        const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (reduce || pool.length === 1) { setPicked(pool[Math.floor(Math.random() * pool.length)]); return; }
+        setRolling(true);
+        let t = 0; const total = 1500; let delay = 60;
+        const step = () => {
+          setFlash(pool[Math.floor(Math.random() * pool.length)]);
+          t += delay; delay *= 1.12;
+          if (t < total) timer.current = setTimeout(step, delay);
+          else { setRolling(false); setFlash(null); setPicked(pool[Math.floor(Math.random() * pool.length)]); }
+        };
+        step();
+      };
+
+      const runDiscover = async () => {
+        const c = cityInput.trim() || "深圳";
+        setLoading(true); setError(""); setResults([]); setPickIdx(-1);
+        onSaveCity(c);
+        try {
+          const res = await fetch(`${API}/api/discover`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ city: c, cuisine: dCuisine, note: note.trim() }),
+          }).then(r => r.json());
+          if (!res.results?.length) setError("这次没搜到，换个城市或说法再试一次");
+          else setResults(res.results);
+        } catch (e) {
+          setError("搜索出了点问题，稍等再试一次");
+        }
+        finally { setLoading(false); }
+      };
+
+      const addToLog = async (item) => {
+        const priceNum = (item.price == null || isNaN(Number(item.price))) ? null : Number(item.price);
+        const ok = await onSaveResto({
+          id: uid(), name: item.name, rating: 0, currency: "¥", price: priceNum,
+          cuisine: item.cuisine ? [item.cuisine] : [], address: item.area || "",
+          notes: item.highlight || "", photos: [], dishes: [], links: [],
+          addedBy: me || "", createdAt: Date.now(),
+        });
+        if (ok) { setSavedNames((p) => ({ ...p, [item.name]: true })); onFlash && onFlash(`已加入「${item.name}」`); }
+      };
+
+      const pickOne = () => { if (results.length) setPickIdx(Math.floor(Math.random() * results.length)); };
+
+      useEffect(() => () => clearTimeout(timer.current), []);
+
+      return (
+        <div className="sheet-wrap" onClick={onClose}>
+          <div className="decider" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-hd">
+              <h2><Dice5 size={20} /> 今天吃啥</h2>
+              <button onClick={onClose}><X size={20} /></button>
+            </div>
+
+            <div className="mode-tabs">
+              <button className={"mtab" + (mode === "log" ? " on" : "")} onClick={() => setMode("log")}><Dice5 size={15} /> 从吃过的抽</button>
+              <button className={"mtab" + (mode === "discover" ? " on" : "")} onClick={() => setMode("discover")}><Compass size={15} /> 搜新店发现</button>
+            </div>
+
+            {mode === "log" && (<>
+            <div className="d-filters">
+              <select value={cuisine} onChange={(e) => setCuisine(e.target.value)}>
+                <option value="">不限菜系</option>
+                {CUISINES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <input type="number" value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} placeholder="人均上限" />
+              <select value={minRating} onChange={(e) => setMinRating(Number(e.target.value))}>
+                <option value={0}>不限评分</option>
+                <option value={3}>≥3星</option>
+                <option value={4}>≥4星</option>
+                <option value={5}>只要5星</option>
+              </select>
+            </div>
+
+            <div className="d-stage">
+              {rolling && <div className="rolling">{flash?.name || "…"}</div>}
+              {!rolling && picked && (
+                <div className="winner">
+                  <div className="w-label">就它了！</div>
+                  {(picked.photos || [])[0] && <img src={picked.photos[0]} alt="" />}
+                  <div className="w-name">{picked.name}</div>
+                  <div className="w-meta">
+                    <Stars value={picked.rating} size={16} />
+                    {picked.price ? <span className="price">{(picked.currency || "¥")}{picked.price}/人</span> : null}
+                  </div>
+                  {(picked.cuisine || []).length > 0 && <div className="tags center">{picked.cuisine.map((c) => <span key={c} className="tag">{c}</span>)}</div>}
+                  <button className="w-open" onClick={() => onOpen(picked)}>看详情 / 编辑</button>
+                </div>
+              )}
+              {!rolling && !picked && (
+                <div className="d-hint">
+                  {pool.length > 0 ? <>在 <b>{pool.length}</b> 家里帮你们抽一个</> : "没有符合条件的餐厅，放宽下条件"}
+                </div>
+              )}
+            </div>
+
+            <button className="d-roll" onClick={roll} disabled={pool.length === 0 || rolling}>
+              <Dice5 size={20} strokeWidth={2.4} /> {picked ? "再抽一次" : "帮我们选"}
+            </button>
+            </>)}
+
+            {mode === "discover" && (
+              <div className="discover">
+                <div className="disc-form">
+                  <div className="disc-row">
+                    <span className="disc-lb"><MapPin size={13} /> 城市</span>
+                    <input value={cityInput} onChange={(e) => setCityInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && runDiscover()} placeholder="深圳" />
+                  </div>
+                  <div className="chips small">
+                    <button className={"chip" + (dCuisine === "" ? " on" : "")} onClick={() => setDCuisine("")}>不限</button>
+                    {CUISINES.map((c) => (
+                      <button key={c} className={"chip" + (dCuisine === c ? " on" : "")} onClick={() => setDCuisine(dCuisine === c ? "" : c)}>{c}</button>
+                    ))}
+                  </div>
+                  <input className="disc-note" value={note} onChange={(e) => setNote(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && runDiscover()}
+                    placeholder="偏好（选填）：适合团建 / 人均100内…" />
+                  <button className="disc-go" onClick={runDiscover} disabled={loading}>
+                    {loading ? <><Loader2 size={16} className="spin" /> 搜索中…</> : <><Sparkles size={16} /> 搜一批候选</>}
+                  </button>
+                </div>
+
+                <div className="disc-results">
+                  {error && <div className="disc-error">{error}</div>}
+                  {results.length > 0 && (
+                    <div className="disc-bar">
+                      <span>{results.length} 家候选</span>
+                      <button className="disc-pick" onClick={pickOne}><Dice5 size={14} /> 帮我挑一个</button>
+                    </div>
+                  )}
+                  {results.map((it, i) => (
+                    <div key={i} className={"rcard" + (pickIdx === i ? " hit" : "")}>
+                      {pickIdx === i && <span className="hit-badge">🎲 就它了</span>}
+                      <div className="rc-top">
+                        <h4>{it.name}</h4>
+                        {it.price != null && <span className="price">¥{it.price}<i>/人</i></span>}
+                      </div>
+                      <div className="rc-meta">
+                        {it.cuisine && <span className="tag">{it.cuisine}</span>}
+                        {it.area && <span className="rc-area"><MapPin size={11} /> {it.area}</span>}
+                      </div>
+                      {it.highlight && <p className="rc-hl">{it.highlight}</p>}
+                      <div className="rc-foot">
+                        <div className="links">
+                          {searchLinks(it.name).slice(0, 3).map((l) => (
+                            <a key={l.label} href={l.url} target="_blank" rel="noreferrer" className="qlink">{l.label}</a>
+                          ))}
+                        </div>
+                        <button className={"rc-add" + (savedNames[it.name] ? " done" : "")}
+                          disabled={!!savedNames[it.name]} onClick={() => addToLog(it)}>
+                          {savedNames[it.name] ? <><Check size={13} /> 已加入</> : <><Plus size={13} /> 加入库</>}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {results.length > 0 && (
+                    <p className="disc-tip">结果来自公开网络，点链接去点评 / 小红书核对一下更稳。</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function NamePrompt({ current, onSave, onClose }) {
+      const [v, setV] = useState(current || "");
+      return (
+        <div className="sheet-wrap" onClick={onClose}>
+          <div className="namebox" onClick={(e) => e.stopPropagation()}>
+            <h2>你是谁？</h2>
+            <p>加餐厅时会标上你的名字，队友就知道是谁记的。</p>
+            <input className="in" autoFocus value={v} onChange={(e) => setV(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && v.trim() && onSave(v.trim())} placeholder="你的名字" />
+            <button className="btn solid" disabled={!v.trim()} onClick={() => v.trim() && onSave(v.trim())}>就叫这个</button>
+          </div>
+        </div>
+      );
+    }
+
+    const CSS = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap');:root{--paper:#FBF6EE;--cloud:#FFFFFF;--ink:#26201C;--stone:#8A7F76;--line:#EFE7DA;--line-d:#DBCEBC;--persimmon:#EC5C29;--persimmon-d:#D3491C;--amber:#F2A93B;--sage:#4C7A5B;--sage-bg:#EAF1EC;--red:#C4443A}*{box-sizing:border-box}html,body{margin:0;padding:0}.app{min-height:100vh;background:var(--paper);color:var(--ink);font-family:inherit;padding-bottom:96px}button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}input,select,textarea{font-family:inherit}.hd{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;background:rgba(251,246,238,.9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}.hd-l{display:flex;align-items:center;gap:10px;min-width:0}.logo{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:var(--persimmon);color:#fff;flex:none;box-shadow:0 4px 12px rgba(236,92,41,.28)}.title{display:flex;align-items:center;gap:6px;font-family:'Fraunces',serif;font-weight:600;font-size:22px;letter-spacing:-.01em;line-height:1}.title svg{opacity:0;color:var(--stone);transition:.15s}.title:hover svg{opacity:1}.title-input{font-family:'Fraunces',serif;font-weight:600;font-size:22px;background:var(--cloud);border:1px solid var(--line-d);border-radius:8px;padding:2px 8px;color:var(--ink);width:180px}.who{font-size:13px;font-weight:600;color:var(--persimmon-d);background:#fff;border:1px solid var(--line-d);padding:7px 12px;border-radius:999px;white-space:nowrap;flex:none}.bar{display:flex;gap:10px;padding:14px 18px 8px}.searchbox{flex:1;display:flex;align-items:center;gap:8px;background:var(--cloud);border:1px solid var(--line-d);border-radius:12px;padding:0 12px;color:var(--stone)}.searchbox input{flex:1;border:none;outline:none;background:none;padding:11px 0;font-size:15px;color:var(--ink)}.searchbox .clr{color:var(--stone);display:grid;place-items:center}.decide{display:flex;align-items:center;gap:6px;background:var(--persimmon);color:#fff;font-weight:700;font-size:15px;padding:0 16px;border-radius:12px;white-space:nowrap;box-shadow:0 5px 14px rgba(236,92,41,.3)}.filters{padding:4px 18px 6px}.chips{display:flex;gap:8px;flex-wrap:wrap}.chip{font-size:13px;font-weight:600;color:var(--stone);background:var(--cloud);border:1px solid var(--line-d);padding:6px 12px;border-radius:999px;transition:.12s}.chip.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}.chips.small .chip{padding:5px 10px;font-size:12px}.sortrow{display:flex;align-items:center;gap:8px;color:var(--stone);margin-top:10px;font-size:13px}.sortrow select{border:none;background:none;font-weight:600;color:var(--ink);font-size:13px;outline:none}.count{margin-left:auto;font-weight:600}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;padding:14px 18px}@media(max-width:560px){.grid{grid-template-columns:1fr;gap:12px}}.empty{grid-column:1/-1;text-align:center;padding:64px 20px;color:var(--stone)}.e-big{font-family:'Fraunces',serif;font-size:24px;color:var(--ink);margin:0 0 6px}.e-sub{margin:0 0 18px;font-size:14px;line-height:1.5}.e-btn{display:inline-flex;align-items:center;gap:6px;background:var(--persimmon);color:#fff;font-weight:700;padding:11px 18px;border-radius:12px}.card{background:var(--cloud);border:1px solid var(--line);border-radius:16px;overflow:hidden;position:relative;box-shadow:0 1px 2px rgba(38,32,28,.04);display:flex;flex-direction:column}.card-top{position:relative;cursor:pointer}.thumb{width:100%;height:150px;object-fit:cover;display:block}.thumb.ph{display:grid;place-items:center;background:linear-gradient(135deg,#F6EEE1,#F1E4D1);color:var(--line-d)}.pcount{position:absolute;right:8px;bottom:8px;display:flex;align-items:center;gap:3px;background:rgba(38,32,28,.66);color:#fff;font-size:11px;font-weight:600;padding:3px 7px;border-radius:999px}.card-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:7px}.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.card-head h3{margin:0;font-family:'Fraunces',serif;font-weight:600;font-size:18px;line-height:1.2;cursor:pointer;letter-spacing:-.01em}.card-actions{display:flex;gap:2px;flex:none}.card-actions button{color:var(--stone);padding:4px;border-radius:7px}.card-actions button:hover{background:var(--paper);color:var(--ink)}.meta{display:flex;align-items:center;gap:10px}.stars{display:inline-flex;gap:1px}.star{display:grid;place-items:center;padding:5px;line-height:0;margin:-5px}.price{font-weight:700;font-size:14px;color:var(--ink)}.price i{font-weight:500;color:var(--stone);font-size:12px;font-style:normal}.tags{display:flex;gap:5px;flex-wrap:wrap}.tags.center{justify-content:center}.tag{font-size:11px;font-weight:600;color:var(--persimmon-d);background:#FCEDE5;padding:3px 8px;border-radius:6px}.dishes{display:flex;align-items:center;gap:5px;margin:0;font-size:13px;color:var(--sage);line-height:1.4}.addr{display:flex;align-items:center;gap:5px;margin:0;font-size:12px;color:var(--stone)}.links{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}.qlink{font-size:12px;font-weight:600;color:var(--stone);background:var(--paper);border:1px solid var(--line);padding:4px 9px;border-radius:7px;text-decoration:none;display:inline-flex;align-items:center;gap:3px}.qlink:hover{color:var(--ink);border-color:var(--line-d)}.qlink.saved{color:var(--persimmon-d);background:#FCEDE5;border-color:#F6D8C8}.by{margin:2px 0 0;font-size:11px;color:var(--line-d);font-weight:600}.confirm{position:absolute;inset:0;background:rgba(255,255,255,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;text-align:center;font-weight:600}.confirm>div{display:flex;gap:10px}.c-no{padding:9px 18px;border-radius:10px;background:var(--paper);border:1px solid var(--line-d);font-weight:600}.c-yes{padding:9px 18px;border-radius:10px;background:var(--red);color:#fff;font-weight:700}.fab{position:fixed;right:20px;bottom:22px;z-index:25;width:58px;height:58px;border-radius:19px;background:var(--ink);color:var(--paper);display:grid;place-items:center;box-shadow:0 8px 22px rgba(38,32,28,.34)}.sheet-wrap{position:fixed;inset:0;z-index:40;background:rgba(38,32,28,.42);display:flex;align-items:flex-end;justify-content:center;-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}@media(min-width:640px){.sheet-wrap{align-items:center}}.sheet,.decider,.namebox{background:var(--paper);width:100%;max-width:520px;max-height:92vh;display:flex;flex-direction:column;border-radius:22px 22px 0 0;overflow:hidden;box-shadow:0 -8px 40px rgba(38,32,28,.3)}@media(min-width:640px){.sheet,.decider,.namebox{border-radius:22px}}.sheet-hd{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line);flex:none}.sheet-hd h2{margin:0;font-family:'Fraunces',serif;font-size:20px;font-weight:600;display:flex;align-items:center;gap:8px}.sheet-hd button{color:var(--stone);padding:4px}.sheet-body{overflow-y:auto;padding:16px 20px 8px;display:flex;flex-direction:column}.fl{font-size:13px;font-weight:700;color:var(--stone);margin:16px 0 7px}.fl:first-child{margin-top:0}.fl span{color:var(--persimmon)}.in{width:100%;background:var(--cloud);border:1px solid var(--line-d);border-radius:11px;padding:11px 13px;font-size:15px;color:var(--ink);outline:none}.in:focus{border-color:var(--persimmon)}.ta{resize:vertical;min-height:64px}.price-row{display:flex;gap:8px}.price-row select{background:var(--cloud);border:1px solid var(--line-d);border-radius:11px;padding:0 10px;font-size:15px;font-weight:600}.price-row .in{flex:1}.dish-add{display:flex;gap:8px}.mini{width:44px;flex:none;display:grid;place-items:center;background:var(--ink);color:var(--paper);border-radius:11px}.dish-list{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.dish{display:inline-flex;align-items:center;gap:5px;font-size:13px;font-weight:600;padding:5px 8px 5px 6px;border-radius:9px;background:var(--cloud);border:1px solid var(--line-d)}.dish .vbtn{display:grid;place-items:center;width:20px;height:20px;border-radius:6px;color:#fff}.dish.v-good .vbtn{background:var(--sage)}.dish.v-good{border-color:#CADBCF;background:var(--sage-bg)}.dish.v-meh .vbtn{background:var(--amber)}.dish.v-bad .vbtn{background:var(--red)}.dish.v-link{color:var(--persimmon-d)}.dish .dx{color:var(--stone);display:grid;place-items:center;padding:6px;margin:-6px -6px -6px 0}.photos{display:flex;gap:9px;flex-wrap:wrap}.ph-item{position:relative;width:76px;height:76px;border-radius:12px;overflow:hidden}.ph-item img{width:100%;height:100%;object-fit:cover}.ph-item button{position:absolute;top:2px;right:2px;background:rgba(38,32,28,.7);color:#fff;width:26px;height:26px;border-radius:7px;display:grid;place-items:center}.ph-add{width:76px;height:76px;border-radius:12px;border:1.5px dashed var(--line-d);color:var(--stone);display:grid;place-items:center;background:var(--cloud)}.sheet-foot{display:flex;gap:10px;padding:14px 20px;border-top:1px solid var(--line);flex:none;background:var(--paper)}.btn{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:13px;border-radius:13px;font-weight:700;font-size:15px}.btn.ghost{background:var(--cloud);border:1px solid var(--line-d);color:var(--ink)}.btn.solid{background:var(--persimmon);color:#fff}.btn.solid:disabled{opacity:.4}.decider{max-width:440px}.mode-tabs{display:flex;gap:6px;padding:12px 20px 0;flex:none}.mtab{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;font-size:14px;font-weight:700;color:var(--stone);background:var(--cloud);border:1px solid var(--line-d);padding:10px;border-radius:11px}.mtab.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}.d-filters{display:flex;gap:8px;padding:16px 20px 4px}.d-filters select,.d-filters input{flex:1;min-width:0;background:var(--cloud);border:1px solid var(--line-d);border-radius:10px;padding:10px;font-size:13px;font-weight:600;color:var(--ink);outline:none}.d-stage{min-height:230px;display:grid;place-items:center;padding:16px 20px;text-align:center}.d-hint{color:var(--stone);font-size:15px;line-height:1.5}.d-hint b{color:var(--persimmon-d);font-size:22px;font-family:'Fraunces',serif}.rolling{font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--stone);opacity:.85}.winner{display:flex;flex-direction:column;align-items:center;gap:10px;animation:pop .35s cubic-bezier(.2,1.3,.4,1)}@keyframes pop{from{transform:scale(.8);opacity:0}to{transform:scale(1);opacity:1}}.w-label{font-size:13px;font-weight:800;letter-spacing:.14em;color:var(--persimmon);text-transform:uppercase}.winner img{width:140px;height:140px;object-fit:cover;border-radius:18px;box-shadow:0 8px 22px rgba(38,32,28,.2)}.w-name{font-family:'Fraunces',serif;font-size:28px;font-weight:700;line-height:1.15;letter-spacing:-.02em}.w-meta{display:flex;align-items:center;gap:10px}.w-open{font-size:13px;font-weight:700;color:var(--persimmon-d);background:#FCEDE5;padding:8px 16px;border-radius:999px;margin-top:4px}.d-roll{margin:4px 20px 22px;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--ink);color:var(--paper);font-weight:700;font-size:16px;padding:15px;border-radius:15px}.d-roll:disabled{opacity:.35}.discover{display:flex;flex-direction:column;min-height:0;flex:1;overflow:hidden}.disc-form{padding:14px 20px 13px;display:flex;flex-direction:column;gap:10px;flex:none;border-bottom:1px solid var(--line)}.disc-row{display:flex;align-items:center;gap:10px}.disc-lb{display:flex;align-items:center;gap:4px;font-size:13px;font-weight:700;color:var(--stone);flex:none}.disc-row input{flex:1;background:var(--cloud);border:1px solid var(--line-d);border-radius:10px;padding:10px 12px;font-size:15px;color:var(--ink);outline:none}.disc-note{background:var(--cloud);border:1px solid var(--line-d);border-radius:10px;padding:10px 12px;font-size:14px;color:var(--ink);outline:none;width:100%}.disc-go{display:flex;align-items:center;justify-content:center;gap:7px;background:var(--persimmon);color:#fff;font-weight:700;font-size:15px;padding:12px;border-radius:12px}.disc-go:disabled{opacity:.6}.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.disc-results{flex:1;overflow-y:auto;padding:12px 20px 20px}.disc-error{text-align:center;color:var(--stone);font-size:14px;padding:26px 10px;line-height:1.5}.disc-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;font-size:13px;font-weight:700;color:var(--stone)}.disc-pick{display:flex;align-items:center;gap:5px;background:var(--ink);color:var(--paper);font-weight:700;font-size:13px;padding:7px 13px;border-radius:999px}.rcard{position:relative;background:var(--cloud);border:1px solid var(--line);border-radius:14px;padding:13px 14px;margin-bottom:10px}.rcard.hit{border-color:var(--persimmon);box-shadow:0 0 0 2px rgba(236,92,41,.18)}.hit-badge{position:absolute;top:-9px;left:12px;background:var(--persimmon);color:#fff;font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px}.rc-top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}.rc-top h4{margin:0;font-family:'Fraunces',serif;font-size:17px;font-weight:600;line-height:1.2}.rc-meta{display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap}.rc-area{display:flex;align-items:center;gap:3px;font-size:12px;color:var(--stone)}.rc-hl{margin:8px 0 0;font-size:13px;color:var(--ink);line-height:1.45}.rc-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:11px}.rc-add{display:flex;align-items:center;gap:4px;font-size:13px;font-weight:700;color:#fff;background:var(--sage);padding:7px 13px;border-radius:9px;flex:none}.rc-add.done{background:var(--sage-bg);color:var(--sage)}.disc-tip{font-size:12px;color:var(--stone);line-height:1.5;margin:6px 2px 0;opacity:.85}.namebox{max-width:400px;border-radius:22px;padding:26px 24px;gap:0;text-align:center}.namebox h2{font-family:'Fraunces',serif;font-size:24px;margin:0 0 8px}.namebox p{color:var(--stone);font-size:14px;line-height:1.5;margin:0 0 18px}.namebox .in{margin-bottom:14px;text-align:center}.namebox .btn{width:100%}.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:60;background:var(--ink);color:var(--paper);font-weight:600;font-size:14px;padding:11px 20px;border-radius:999px;box-shadow:0 6px 20px rgba(38,32,28,.3);animation:pop .25s}`;
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
