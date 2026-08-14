@@ -10,10 +10,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="队友食录">
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/lucide@latest"></script>
+  <!-- 前端库直接打包在项目里，不走外部 CDN —— 国内访问 unpkg/jsdelivr 时好时坏，
+       部分"CDN 加速"类浏览器插件还会把脚本改成异步加载，打乱执行顺序导致页面白屏 -->
+  <script src="/vendor/react.production.min.js"></script>
+  <script src="/vendor/react-dom.production.min.js"></script>
+  <script src="/vendor/babel.min.js"></script>
+  <script src="/vendor/lucide.js"></script>
   <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }
