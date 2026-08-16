@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import { createClient } from '@libsql/client';
-import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -17,19 +16,12 @@ const PORT = process.env.PORT || 3000;
 // 所以统一 trim 一遍，防止这种复制粘贴的小问题搞垮整个服务。
 const TURSO_URL = process.env.TURSO_URL?.trim() || 'file:db.sqlite';
 const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN?.trim() || undefined;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY?.trim() || undefined;
 
 // 数据库连接
 const db = createClient({
   url: TURSO_URL,
   authToken: TURSO_AUTH_TOKEN,
 });
-
-// Claude API 客户端（用于 /api/discover）
-const anthropic = ANTHROPIC_API_KEY
-  ? new Anthropic({ apiKey: ANTHROPIC_API_KEY })
-  : null;
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL?.trim() || 'claude-opus-5';
 
 // 中间件
 app.use(cors());
@@ -162,61 +154,6 @@ app.post('/api/meta', async (req, res) => {
   }
 });
 
-// ============ Claude API 代理 (搜新店) ============
-
-async function discoverRestaurants(city, cuisine, note) {
-  const want = `在${city}${cuisine ? `的${cuisine}` : "的"}餐厅`;
-  const prompt =
-    `联网搜索${want}，${note ? `偏好：${note}，` : ""}找 6 家真实存在、目前正在营业、口碑不错的店。
-请使用联网搜索工具核实这些餐厅确实存在（例如通过大众点评、美团、小红书等信息源核实），不要编造不存在的餐厅。
-只返回一个 JSON 数组，不要任何解释、前后缀或 markdown 代码块。每个对象字段：
-name(店名), area(所在商圈或区), cuisine(菜系), price(人均消费数字,人民币,不确定填null), highlight(不超过20字的一句话亮点)。
-示例：[{"name":"楠火锅","area":"福田","cuisine":"火锅","price":130,"highlight":"网红川锅，晚上常排队"}]`;
-
-  const response = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 2048,
-    output_config: { effort: 'medium' },
-    tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 8 }],
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  if (response.stop_reason === 'refusal') {
-    throw new Error('搜索请求被拒绝，换个城市或菜系试试');
-  }
-
-  const text = response.content
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
-
-  const clean = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-  const s = clean.indexOf('[');
-  const e = clean.lastIndexOf(']');
-
-  if (s === -1 || e === -1) throw new Error('没有搜到有效结果，请重试');
-
-  const arr = JSON.parse(clean.slice(s, e + 1));
-  return Array.isArray(arr) ? arr.slice(0, 8) : [];
-}
-
-app.post('/api/discover', async (req, res) => {
-  try {
-    if (!anthropic) {
-      return res.status(400).json({ error: '未配置 Claude API 密钥' });
-    }
-    const { city, cuisine, note } = req.body;
-    if (!city || !String(city).trim()) {
-      return res.status(400).json({ error: '请填写城市' });
-    }
-    const results = await discoverRestaurants(city, cuisine, note);
-    res.json({ results });
-  } catch (e) {
-    console.error('Discover error:', e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // ============ 静态文件 & SPA ============
 
 app.get('/', (req, res) => {
@@ -226,7 +163,4 @@ app.get('/', (req, res) => {
 await initDB();
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
-  if (!anthropic) {
-    console.warn('ANTHROPIC_API_KEY 未配置，"搜新店发现" 功能将不可用');
-  }
 });
